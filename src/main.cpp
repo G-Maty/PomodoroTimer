@@ -29,8 +29,12 @@ Pico(Rp2040)動作クロック:125MHz
 #define TFT_SDA    19  // SDA
 #define TFT_RST     22  // Reset 
 #define STBT         10
-#define UPBT         11
-#define DOWNBT       12
+#define UP1BT         11
+#define UP10BT        12
+#define DOWN1BT       13
+#define DOWN10BT      9
+#define SETBT         8
+#define NULBT       7
 
 
 //色設定
@@ -41,18 +45,28 @@ Pico(Rp2040)動作クロック:125MHz
 
 
 //グローバル変数
-unsigned long TimerCount = 0;
 /*
-0:タイマー停止中,1:カウントダウン中,2:カウントセット中
+0:タイマー停止中
+1:workTimeカウントダウン中
+2:breakTimeカウントダウン中
+3:workTimeセット中
+4:breakTimeセット中
 */
 char TimerStatus = 0;
-unsigned long WorkTime = 3600; //デフォルト1h
-unsigned long BreakTime = 300; //デフォルト5m
+bool BreakFlg = false; //breakTimeカウントダウン有無
+unsigned long MaxWorkTime = 3600; //デフォルト1h
+unsigned long MaxBreakTime = 300; //デフォルト5m
+unsigned long WorkTime = 0;  //作業用カウンタ
+unsigned long BreakTime = 0;  //作業用カウンタ
+
 
 //プロトタイプ宣言
 void print_DisplayInfo(void);
 void print_Header(void);
+void print_Time(void);
 bool Timer(struct repeating_timer *t);
+void set_WorkTime(void);
+void set_BreakTime(void);
 
 //割り込み初期設定
 struct repeating_timer st_timer;
@@ -61,19 +75,31 @@ struct repeating_timer st_timer;
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
 int main(){
-  unsigned long preCount = TimerCount;
-  unsigned char isStart;
-  unsigned char timer_st = 0;
+  unsigned long pre_w_cnt = MaxWorkTime;
+  unsigned long pre_b_cnt = MaxBreakTime;
+  unsigned char isStart;  //スタートボタン状態格納
+  unsigned char isSet;    //セットボタン状態格納
+  unsigned char setbt_tmp;  //マルチスキャン対策
+  unsigned char strtbt_tmp; //マルチスキャン対策
+  //unsigned char timer_st = 0;
 
+  //ピン初期設定
+  pinMode(UP1BT,INPUT_PULLDOWN);
+  pinMode(DOWN1BT,INPUT_PULLDOWN);
+  pinMode(UP10BT,INPUT_PULLDOWN);
+  pinMode(DOWN10BT,INPUT_PULLDOWN);
+  pinMode(SETBT,INPUT_PULLDOWN);
+  pinMode(STBT,INPUT_PULLDOWN);
+  pinMode(LED_BUILTIN,OUTPUT);
 
+  //ディスプレイ初期化
   tft.initR(INITR_GREENTAB);                //Init ST7735S初期化(GREENTAB以外はバグ発生、部品種で変化)
   tft.fillScreen(ST77XX_BLACK);               //背景の塗りつぶし
   tft.setRotation(3);                         //画面回転
-  //ピン初期設定
-  pinMode(UPBT,INPUT_PULLDOWN);
-  pinMode(DOWNBT,INPUT_PULLDOWN);
-  pinMode(STBT,INPUT_PULLDOWN);
-  pinMode(LED_BUILTIN,OUTPUT);
+
+  //タイマー初期化
+  WorkTime = MaxWorkTime;
+  BreakTime = MaxBreakTime;
 
   //print_DisplayInfo();
   /* タイマーの初期化(割込み間隔はusで指定) */
@@ -82,47 +108,53 @@ int main(){
 
   while(1){
     print_Header();
+    print_Time();
 
-    if(digitalRead(UPBT)){
-      if(((WorkTime % 3600) % 60) % 60 == 0){ //ひっかかりを作る
-        sleep_ms(200);
-      }
-      WorkTime += 10;
-    }else if(digitalRead(DOWNBT)){
-      if(((WorkTime % 3600) % 60) % 60 == 0){ //ひっかかりを作る
-        sleep_ms(200);
-      }
-      if(WorkTime < 0) break;
-      WorkTime -= 10;
-    }
-
-    tft.setTextSize(2);
-    tft.setCursor(10,80);
-    tft.printf("Chill Mode");
-
-    //時間が変化した時表示更新
-    if(preCount != WorkTime){
-      tft.fillScreen(ST77XX_BLACK);
-      tft.setTextSize(1.8);
-      preCount = WorkTime;
-      tft.setCursor(10,40);
-      int hour = WorkTime / 3600;
-      int minute = (WorkTime % 3600) / 60;
-      int seconds = (WorkTime % 3600) % 60;
-      tft.printf("%dh %dm %ds\n",hour, minute, seconds);
-    }
-
-    //マルチスキャン対策
+    /* 状態遷移 */
+    //キー読み取り(マルチスキャン対策)
+    isSet = digitalRead(SETBT);
     isStart = digitalRead(STBT);
     sleep_ms(10);
-    char tmp = digitalRead(STBT);
-    if(isStart != tmp){
-      if(isStart && (TimerStatus == 0)){
-        TimerStatus = 1;
-      }else if(isStart && (TimerStatus == 1)){
+    setbt_tmp = digitalRead(SETBT);
+    strtbt_tmp = digitalRead(STBT);
+    //停止状態 -> セット状態
+    if(isSet != setbt_tmp){
+      if((isSet && (TimerStatus == 0)) || (isSet && (TimerStatus == 4)))   {
+        TimerStatus = 3;
+      }else if(isSet && (TimerStatus == 3)){
+        TimerStatus = 4;
+      }
+    }
+    //セット状態 -> 停止状態
+    if(isStart != strtbt_tmp){
+      if((isStart && (TimerStatus == 3)) || (isStart && (TimerStatus == 4))){
+        TimerStatus = 0;
+      }
+    }
+    //停止状態 <-> カウント開始状態
+    if(isStart != strtbt_tmp){
+      if(isStart && (TimerStatus == 0)){ //停止 -> カウント
+        if(!BreakFlg){
+          TimerStatus = 1;
+        }else{
+          TimerStatus = 2;
+        }
+      }else if(isStart && ((TimerStatus == 1) || (TimerStatus == 2))){
         TimerStatus = 0;  //カウント停止
       }
     }
+
+    /* 各状態中の処理 */
+    if(TimerStatus == 3){
+      set_WorkTime();
+    }else if(TimerStatus == 4){
+      set_BreakTime();
+    }
+
+    //tft.setTextSize(2);
+    //tft.setCursor(10,80);
+    //tft.printf("Chill Mode");
+    
   }
 }
 
@@ -131,10 +163,27 @@ int main(){
 戻り値の型は必ずbool型 
 */
 bool Timer(struct repeating_timer *t) {
-  if(TimerCount < 0 || (TimerStatus == 0)){
+  if(!(TimerStatus == 1) && !(TimerStatus == 2)){ //1,2以外
     return true;
   }
-  WorkTime--;
+  
+  if(TimerStatus == 1){
+    WorkTime--;
+  }else if(TimerStatus == 2){
+    BreakTime--;
+  }
+
+  //各タイマー消化時の自動遷移
+  if((WorkTime == 0) && (TimerStatus == 1)){ //work消化
+    WorkTime = MaxWorkTime;
+    BreakFlg = true;
+    TimerStatus = 2;
+  }
+  if((BreakTime == 0) && (TimerStatus == 2)){ //break消化
+    BreakTime = MaxBreakTime;
+    BreakFlg = false;
+    TimerStatus = 1;
+  }
   return true;
 }
 
@@ -143,6 +192,98 @@ void print_Header(){
     tft.setCursor(40,10);
     tft.println("PomodoroTimer");
     tft.drawLine(0,20,160,20,ST77XX_RED);
+}
+
+void print_Time(){
+  static unsigned long pre_w_cnt = 0;
+  static unsigned long pre_b_cnt = 0;
+
+  //時間が変化した時表示更新
+  if((pre_w_cnt != WorkTime) || (pre_b_cnt != BreakTime)){
+    tft.fillScreen(ST77XX_BLACK);
+    tft.setTextSize(1.8);
+    pre_w_cnt = WorkTime;
+    pre_b_cnt = BreakTime;
+    tft.setCursor(10,40);
+    int hour = WorkTime / 3600;
+    int minute = (WorkTime % 3600) / 60;
+    int seconds = (WorkTime % 3600) % 60;
+    tft.printf("Work: %dh %dm %ds\n",hour, minute, seconds);
+    tft.setCursor(10,60);
+    hour = BreakTime / 3600;
+    minute = (BreakTime % 3600) / 60;
+    seconds = (BreakTime % 3600) % 60;
+    tft.printf("Break: %dh %dm %ds\n",hour, minute, seconds);
+    tft.printf("Status:%d\n", TimerStatus);
+  }
+}
+
+void set_WorkTime(){
+  if(digitalRead(UP1BT)){
+    WorkTime += 60;
+    if(WorkTime > 36000){ //max10時間まで
+      WorkTime = 36000;
+    }
+    WorkTime = (WorkTime / 60) * 60; //設定した時に必ず秒数は0 
+    sleep_ms(100);
+  }else if(digitalRead(UP10BT)){
+    WorkTime += 600;
+    if(WorkTime > 36000){ //max10時間まで
+      WorkTime = 36000;
+    }
+    WorkTime = (WorkTime / 60) * 60; //設定した時に必ず秒数は0 
+    sleep_ms(100);
+  }else if(digitalRead(DOWN1BT)){
+    WorkTime -= 60;
+    if(WorkTime > 36000){ //max10時間まで
+      WorkTime = 0;
+    }
+    WorkTime = (WorkTime / 60) * 60; //設定した時に必ず秒数は0 
+    sleep_ms(100);
+  }else if(digitalRead(DOWN10BT)){
+    WorkTime -= 600;
+    if(WorkTime > 36000){
+      WorkTime = 0;
+    }
+    WorkTime = (WorkTime / 60) * 60; //設定した時に必ず秒数は0 
+    sleep_ms(100);
+  }
+  MaxWorkTime = WorkTime;    //設定値を保存
+  BreakFlg = false;   //設定後はworkからカウントダウン
+}
+
+void set_BreakTime(){
+  if(digitalRead(UP1BT)){
+    BreakTime += 60;
+    if(BreakTime > 36000){ //max10時間まで
+      BreakTime = 36000;
+    }
+    BreakTime = (BreakTime / 60) * 60; //設定した時に必ず秒数は0 
+    sleep_ms(100);
+  }else if(digitalRead(UP10BT)){
+    BreakTime += 600;
+    if(BreakTime > 36000){ //max10時間まで
+      BreakTime = 36000;
+    }
+    BreakTime = (BreakTime / 60) * 60; //設定した時に必ず秒数は0 
+    sleep_ms(100);
+  }else if(digitalRead(DOWN1BT)){
+    BreakTime -= 60;
+    if(BreakTime > 36000){ //max10時間まで
+      BreakTime = 0;
+    }
+    BreakTime = (BreakTime / 60) * 60; //設定した時に必ず秒数は0 
+    sleep_ms(100);
+  }else if(digitalRead(DOWN10BT)){
+    BreakTime -= 600;
+    if(BreakTime > 36000){
+      BreakTime = 0;
+    }
+    BreakTime = (BreakTime / 60) * 60; //設定した時に必ず秒数は0 
+    sleep_ms(100);
+  }
+  MaxBreakTime = BreakTime;    //設定値を保存 
+  BreakFlg = false;   //設定後はworkからカウントダウン
 }
 
 void print_DisplayInfo(){
