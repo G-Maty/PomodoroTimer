@@ -23,18 +23,19 @@ Pico(Rp2040)動作クロック:125MHz
 #include <Adafruit_ST7735.h>
 
 //ピン番号設定
-#define TFT_DC      28  // DC
+#define TFT_DC      26  // DC
 #define TFT_CS      17  // CS
 #define TFT_SCLK    18  // Clock
-#define TFT_SDA    19  // SDA
-#define TFT_RST     22  // Reset 
-#define STBT         10
-#define UP1BT         11
-#define UP10BT        12
-#define DOWN1BT       13
-#define DOWN10BT      9
-#define SETBT         8
-#define NULBT       7
+#define TFT_SDA    19  // SDA(MOSI)
+#define TFT_RST     27  // Reset 
+#define STBT         11
+#define UP1BT         8
+#define UP10BT        7
+#define DOWN1BT       9
+#define DOWN10BT      10
+#define SETBT         12
+#define NULBT       13
+#define BZR         21
 
 
 //色設定
@@ -54,8 +55,8 @@ Pico(Rp2040)動作クロック:125MHz
 */
 char TimerStatus = 0;
 bool BreakFlg = false; //breakTimeカウントダウン有無
-unsigned long MaxWorkTime = 3600; //デフォルト1h
-unsigned long MaxBreakTime = 300; //デフォルト5m
+unsigned long MaxWorkTime = 5; //デフォルト1h = 3600
+unsigned long MaxBreakTime = 5; //デフォルト5m = 300
 unsigned long WorkTime = 0;  //作業用カウンタ
 unsigned long BreakTime = 0;  //作業用カウンタ
 
@@ -65,8 +66,11 @@ void print_DisplayInfo(void);
 void print_Header(void);
 void print_Time(void);
 bool Timer(struct repeating_timer *t);
+void print_Setting(void);
+void print_Footer(void);
 void set_WorkTime(void);
 void set_BreakTime(void);
+void call_Time(void);
 
 //割り込み初期設定
 struct repeating_timer st_timer;
@@ -91,10 +95,12 @@ int main(){
   pinMode(SETBT,INPUT_PULLDOWN);
   pinMode(STBT,INPUT_PULLDOWN);
   pinMode(LED_BUILTIN,OUTPUT);
+  pinMode(BZR, OUTPUT);
+  pinMode(NULBT,INPUT_PULLDOWN);
 
   //ディスプレイ初期化
   tft.initR(INITR_GREENTAB);                //Init ST7735S初期化(GREENTAB以外はバグ発生、部品種で変化)
-  tft.fillScreen(ST77XX_BLACK);               //背景の塗りつぶし
+  tft.fillScreen(ST7735_BLACK);               //背景の塗りつぶし
   tft.setRotation(3);                         //画面回転
 
   //タイマー初期化
@@ -107,19 +113,27 @@ int main(){
 
 
   while(1){
-    print_Header();
-    print_Time();
+    /* 出力 */
+    if(TimerStatus == 3 || TimerStatus == 4){
+      print_Setting();
+    }else{
+      print_Time();
+    }
+    print_Footer();
 
     /* 状態遷移 */
     //キー読み取り(マルチスキャン対策)
     isSet = digitalRead(SETBT);
     isStart = digitalRead(STBT);
-    sleep_ms(10);
+    sleep_ms(100);
     setbt_tmp = digitalRead(SETBT);
     strtbt_tmp = digitalRead(STBT);
     //停止状態 -> セット状態
     if(isSet != setbt_tmp){
-      if((isSet && (TimerStatus == 0)) || (isSet && (TimerStatus == 4)))   {
+      if(isSet && (TimerStatus == 0)){
+        tft.fillScreen(ST7735_BLACK); //画面を一度クリーン
+        TimerStatus = 3;
+      }else if(isSet && (TimerStatus == 4)){
         TimerStatus = 3;
       }else if(isSet && (TimerStatus == 3)){
         TimerStatus = 4;
@@ -128,6 +142,7 @@ int main(){
     //セット状態 -> 停止状態
     if(isStart != strtbt_tmp){
       if((isStart && (TimerStatus == 3)) || (isStart && (TimerStatus == 4))){
+        tft.fillScreen(ST7735_BLACK); //画面を一度クリーン
         TimerStatus = 0;
       }
     }
@@ -143,6 +158,7 @@ int main(){
         TimerStatus = 0;  //カウント停止
       }
     }
+
 
     /* 各状態中の処理 */
     if(TimerStatus == 3){
@@ -177,45 +193,136 @@ bool Timer(struct repeating_timer *t) {
   if((WorkTime == 0) && (TimerStatus == 1)){ //work消化
     WorkTime = MaxWorkTime;
     BreakFlg = true;
+    call_Time();
     TimerStatus = 2;
   }
   if((BreakTime == 0) && (TimerStatus == 2)){ //break消化
     BreakTime = MaxBreakTime;
     BreakFlg = false;
+    call_Time();
     TimerStatus = 1;
   }
   return true;
 }
 
 void print_Header(){
+    tft.setTextColor(ST7735_WHITE);
     tft.setTextSize(1.8);
     tft.setCursor(40,10);
     tft.println("PomodoroTimer");
     tft.drawLine(0,20,160,20,ST77XX_RED);
 }
 
+/* 時間表示 */
+/* メインで常にコール */
 void print_Time(){
   static unsigned long pre_w_cnt = 0;
   static unsigned long pre_b_cnt = 0;
 
+  print_Header();
   //時間が変化した時表示更新
   if((pre_w_cnt != WorkTime) || (pre_b_cnt != BreakTime)){
-    tft.fillScreen(ST77XX_BLACK);
-    tft.setTextSize(1.8);
+    //tft.fillScreen(ST7735_BLACK); fillScreenで画面を更新すると、画面ちらつきの元になる
     pre_w_cnt = WorkTime;
     pre_b_cnt = BreakTime;
-    tft.setCursor(10,40);
-    int hour = WorkTime / 3600;
-    int minute = (WorkTime % 3600) / 60;
-    int seconds = (WorkTime % 3600) % 60;
-    tft.printf("Work: %dh %dm %ds\n",hour, minute, seconds);
-    tft.setCursor(10,60);
+
+    int hour;
+    int minute;
+    int seconds;
     hour = BreakTime / 3600;
     minute = (BreakTime % 3600) / 60;
     seconds = (BreakTime % 3600) % 60;
-    tft.printf("Break: %dh %dm %ds\n",hour, minute, seconds);
-    tft.printf("Status:%d\n", TimerStatus);
+    /*
+    setTextColor(文字色、背景色)
+    背景色を設定することで、表示を変えた時に元の文字に被さって表示がおかしくなるのを防ぐ
+    */
+    if(TimerStatus != 2){ //worktime表示
+      hour = WorkTime / 3600;
+      minute = (WorkTime % 3600) / 60;
+      seconds = (WorkTime % 3600) % 60;
+      tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
+      tft.setCursor(15,50); 
+      tft.setTextSize(2);
+      tft.printf("%2dh %2dm %2ds\n",hour, minute, seconds);
+    }else{
+      hour = BreakTime / 3600;
+      minute = (BreakTime % 3600) / 60;
+      seconds = (BreakTime % 3600) % 60;
+      tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
+      tft.setCursor(15,50); 
+      tft.setTextSize(2);
+      tft.printf("%2dh %2dm %2ds\n",hour, minute, seconds);
+    }
+    /*
+    tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
+    tft.setTextSize(1);
+    tft.setCursor(10,30);
+    tft.printf("Work\n");
+    tft.setTextSize(2);
+    tft.printf("%2dh %2dm %2ds\n",hour, minute, seconds);
+    */
+    /*
+    tft.setCursor(10,60);
+    tft.setTextSize(1);
+    tft.printf("Chill\n");
+    tft.setTextSize(2);
+    tft.printf("%2dh %2dm %2ds\n",hour, minute, seconds);
+    */
   }
+  //カーソルの消去
+  tft.fillTriangle(140,75, 150,70, 150,80, ST7735_BLACK); //オフ
+  tft.fillTriangle(140,45, 150,40, 150,50, ST7735_BLACK); //オフ
+
+}
+
+void print_Setting(){
+
+  print_Header();
+  int hour = WorkTime / 3600;
+  int minute = (WorkTime % 3600) / 60;
+  int seconds = (WorkTime % 3600) % 60;
+  /*
+  setTextColor(文字色、背景色)
+  背景色を設定することで、表示を変えた時に元の文字に被さって表示がおかしくなるのを防ぐ
+  */
+  tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
+  tft.setTextSize(1);
+  tft.setCursor(10,30);
+  tft.printf("Work\n");
+  tft.setTextSize(2);
+  tft.printf("%2dh %2dm %2ds\n",hour, minute, seconds);
+  hour = BreakTime / 3600;
+  minute = (BreakTime % 3600) / 60;
+  seconds = (BreakTime % 3600) % 60;
+  tft.setCursor(10,60);
+  tft.setTextSize(1);
+  tft.printf("Chill\n");
+  tft.setTextSize(2);
+  tft.printf("%2dh %2dm %2ds\n",hour, minute, seconds);
+  tft.setTextColor(ST7735_GREEN, ST7735_BLACK);
+  if(TimerStatus == 3){
+    //セット中のカーソル
+    tft.fillTriangle(140,45, 150,40, 150,50, ST7735_GREEN); //オン
+    tft.fillTriangle(140,75, 150,70, 150,80, ST7735_BLACK); //オフ
+  }else if(TimerStatus == 4){
+    tft.fillTriangle(140,75, 150,70, 150,80, ST7735_GREEN); //オン
+    tft.fillTriangle(140,45, 150,40, 150,50, ST7735_BLACK); //オフ
+  }
+  //フッター
+  tft.drawRect(10,90,140,30, ST7735_RED);
+  tft.setCursor(45,100);
+  tft.setTextSize(1);
+  tft.setTextColor(ST7735_WHITE);
+  tft.println("Setting Mode");
+}
+
+void print_Footer(){
+  tft.drawRect(10,90,140,30, ST7735_RED);
+}
+
+void call_Time(){
+  //tone(pin, freq, duration)
+  tone(BZR, 500, 50);
 }
 
 void set_WorkTime(){
