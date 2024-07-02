@@ -1,5 +1,4 @@
 /**********************************************************************
-
 【準備】
   SPIで通信,配線に注意!
 
@@ -15,7 +14,6 @@ GP17 - CLK(SCL×)  (シリアルクロック)
 
 Pico(Rp2040)動作クロック:125MHz
 最大5時間(18000秒)まで計測可能
-
 **********************************************************************/
 //#include <Arduino.h>
 #include "pico/stdlib.h"
@@ -26,24 +24,22 @@ Pico(Rp2040)動作クロック:125MHz
 #define TFT_DC      26  // DC
 #define TFT_CS      17  // CS
 #define TFT_SCLK    18  // Clock
-#define TFT_SDA    19  // SDA(MOSI)
+#define TFT_SDA     19  // SDA(MOSI)
 #define TFT_RST     27  // Reset 
-#define STBT         11
-#define UP1BT         8
-#define UP10BT        7
-#define DOWN1BT       9
-#define DOWN10BT      10
-#define SETBT         12
+#define STBT        11
+#define UP1BT        8
+#define UP10BT       7
+#define DOWN1BT      9
+#define DOWN10BT    10
+#define SETBT       12
 #define NULBT       13
 #define BZR         21
-
 
 //色設定
 #define RED ST77XX_RED
 #define BLUE ST77XX_BLUE
 #define DISP_MAX_HIGHT 128
 #define DISP_MAX_WIDH 160
-
 
 //グローバル変数
 /*
@@ -55,13 +51,13 @@ Pico(Rp2040)動作クロック:125MHz
 */
 char TimerStatus = 0;
 bool BreakFlg = false; //breakTimeカウントダウン有無
-unsigned long MaxWorkTime = 5; //デフォルト1h = 3600
-unsigned long MaxBreakTime = 5; //デフォルト5m = 300
+unsigned long MaxWorkTime = 3600; //デフォルト1h = 3600
+unsigned long MaxBreakTime = 600; //デフォルト10m = 600
 unsigned long WorkTime = 0;  //作業用カウンタ
 unsigned long BreakTime = 0;  //作業用カウンタ
+unsigned int SetCount = 1; //何セット目かカウント
 
-
-//プロトタイプ宣言
+/* プロトタイプ宣言 */
 void print_DisplayInfo(void);
 void print_Header(void);
 void print_Time(void);
@@ -70,7 +66,7 @@ void print_Setting(void);
 void print_Footer(void);
 void set_WorkTime(void);
 void set_BreakTime(void);
-void call_Time(void);
+void call_Time(int);
 
 //割り込み初期設定
 struct repeating_timer st_timer;
@@ -85,7 +81,6 @@ int main(){
   unsigned char isSet;    //セットボタン状態格納
   unsigned char setbt_tmp;  //マルチスキャン対策
   unsigned char strtbt_tmp; //マルチスキャン対策
-  //unsigned char timer_st = 0;
 
   //ピン初期設定
   pinMode(UP1BT,INPUT_PULLDOWN);
@@ -110,7 +105,6 @@ int main(){
   //print_DisplayInfo();
   /* タイマーの初期化(割込み間隔はusで指定) */
   add_repeating_timer_us(1000000, Timer, NULL, &st_timer);
-
 
   while(1){
     /* 出力 */
@@ -162,15 +156,16 @@ int main(){
 
     /* 各状態中の処理 */
     if(TimerStatus == 3){
+      if(SetCount != 1){
+        SetCount = 1; //セットカウントクリア
+      }
       set_WorkTime();
     }else if(TimerStatus == 4){
+      if(SetCount != 1){
+        SetCount = 1; //セットカウントクリア
+      }
       set_BreakTime();
     }
-
-    //tft.setTextSize(2);
-    //tft.setCursor(10,80);
-    //tft.printf("Chill Mode");
-    
   }
 }
 
@@ -193,18 +188,20 @@ bool Timer(struct repeating_timer *t) {
   if((WorkTime == 0) && (TimerStatus == 1)){ //work消化
     WorkTime = MaxWorkTime;
     BreakFlg = true;
-    call_Time();
+    call_Time(100);
     TimerStatus = 2;
   }
   if((BreakTime == 0) && (TimerStatus == 2)){ //break消化
     BreakTime = MaxBreakTime;
     BreakFlg = false;
-    call_Time();
+    SetCount++;
+    call_Time(100);
     TimerStatus = 1;
   }
   return true;
 }
 
+/* ヘッダー出力 */
 void print_Header(){
     tft.setTextColor(ST7735_WHITE);
     tft.setTextSize(1.8);
@@ -241,42 +238,31 @@ void print_Time(){
       minute = (WorkTime % 3600) / 60;
       seconds = (WorkTime % 3600) % 60;
       tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
-      tft.setCursor(15,50); 
+      tft.setCursor(15,45); 
       tft.setTextSize(2);
       tft.printf("%2dh %2dm %2ds\n",hour, minute, seconds);
+      tft.setCursor(15,70);
+      tft.setTextSize(1);
+      tft.printf("SetCount:%2d\n",SetCount);
     }else{
       hour = BreakTime / 3600;
       minute = (BreakTime % 3600) / 60;
       seconds = (BreakTime % 3600) % 60;
       tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
-      tft.setCursor(15,50); 
+      tft.setCursor(15,45); 
       tft.setTextSize(2);
       tft.printf("%2dh %2dm %2ds\n",hour, minute, seconds);
+      tft.setCursor(15,70);
+      tft.setTextSize(1);
+      tft.printf("SetCount:%2d\n",SetCount);
     }
-    /*
-    tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
-    tft.setTextSize(1);
-    tft.setCursor(10,30);
-    tft.printf("Work\n");
-    tft.setTextSize(2);
-    tft.printf("%2dh %2dm %2ds\n",hour, minute, seconds);
-    */
-    /*
-    tft.setCursor(10,60);
-    tft.setTextSize(1);
-    tft.printf("Chill\n");
-    tft.setTextSize(2);
-    tft.printf("%2dh %2dm %2ds\n",hour, minute, seconds);
-    */
   }
   //カーソルの消去
   tft.fillTriangle(140,75, 150,70, 150,80, ST7735_BLACK); //オフ
   tft.fillTriangle(140,45, 150,40, 150,50, ST7735_BLACK); //オフ
-
 }
 
 void print_Setting(){
-
   print_Header();
   int hour = WorkTime / 3600;
   int minute = (WorkTime % 3600) / 60;
@@ -310,21 +296,42 @@ void print_Setting(){
   }
   //フッター
   tft.drawRect(10,90,140,30, ST7735_RED);
-  tft.setCursor(45,100);
-  tft.setTextSize(1);
+  tft.setCursor(45,97);
+  tft.setTextSize(2);
   tft.setTextColor(ST7735_WHITE);
-  tft.println("Setting Mode");
+  tft.println("Setting ");
 }
 
+/* フッター出力 */
 void print_Footer(){
-  tft.drawRect(10,90,140,30, ST7735_RED);
+  if(TimerStatus == 1){
+    tft.drawRect(10,90,140,30, 0x1aff);
+    tft.setCursor(25,97);
+    tft.setTextSize(2);
+    tft.setTextColor(0x1aff,ST7735_BLACK);
+    tft.println(" Working ");
+  }else if(TimerStatus == 2){
+    tft.drawRect(10,90,140,30, ST7735_GREEN);
+    tft.setCursor(25,97);
+    tft.setTextSize(2);
+    tft.setTextColor(ST7735_GREEN,ST7735_BLACK);
+    tft.println(" Chilling ");
+  }else if(TimerStatus == 0){
+    tft.drawRect(10,90,140,30, 0x17ff);
+    tft.setCursor(24,97);
+    tft.setTextSize(2);
+    tft.setTextColor(0x17ff,ST7735_BLACK);
+    tft.println("   Stop  ");
+  }
 }
 
-void call_Time(){
+/* ブザー出力 */
+void call_Time(int time){
   //tone(pin, freq, duration)
-  tone(BZR, 500, 50);
+  tone(BZR, 500, time);
 }
 
+/* ワークタイム設定 */
 void set_WorkTime(){
   if(digitalRead(UP1BT)){
     WorkTime += 60;
@@ -359,6 +366,7 @@ void set_WorkTime(){
   BreakFlg = false;   //設定後はworkからカウントダウン
 }
 
+/* ブレイクタイム設定 */
 void set_BreakTime(){
   if(digitalRead(UP1BT)){
     BreakTime += 60;
@@ -391,13 +399,4 @@ void set_BreakTime(){
   }
   MaxBreakTime = BreakTime;    //設定値を保存 
   BreakFlg = false;   //設定後はworkからカウントダウン
-}
-
-void print_DisplayInfo(){
-  //ディスプレイの情報を取得し、表示
-  tft.setTextSize(1);
-  tft.printf("width*height\n");
-  tft.printf("%d * %d\n",tft.width(),tft.height());
-  tft.printf("Rotate\n");
-  tft.printf("%d\n",tft.getRotation());
 }
